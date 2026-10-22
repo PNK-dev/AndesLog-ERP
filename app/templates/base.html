@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>{% block title %}AndesLog ERP{% endblock %} · AndesLog</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body class="{% if not current_user.is_authenticated %}auth-layout{% endif %}">
+{% if current_user.is_authenticated %}
+<div class="shell">
+  <aside class="sidebar">
+    <a class="brand" href="{{ url_for('main.dashboard') }}"><span class="brand-mark">A</span><span><b>andeslog</b><small>OPERACIONES B2B</small></span></a>
+    <div class="nav-label">GESTIÓN</div>
+    <nav>
+      <a href="{{ url_for('main.dashboard') }}" class="{{ 'active' if request.endpoint == 'main.dashboard' else '' }}"><span>▦</span> Resumen</a>
+      <a href="{{ url_for('main.warehouses') }}" class="{{ 'active' if request.endpoint == 'main.warehouses' else '' }}"><span>▤</span> Almacenes</a>
+      <a href="{{ url_for('main.inventory') }}" class="{{ 'active' if request.endpoint == 'main.inventory' else '' }}"><span>▥</span> Inventario</a>
+      <a href="{{ url_for('main.products') }}" class="{{ 'active' if request.endpoint == 'main.products' else '' }}"><span>◇</span> Productos</a>
+      <a href="{{ url_for('main.customers') }}" class="{{ 'active' if request.endpoint == 'main.customers' else '' }}"><span>♧</span> Clientes B2B</a>
+      <a href="{{ url_for('main.orders') }}" class="{{ 'active' if request.endpoint == 'main.orders' else '' }}"><span>▣</span> Pedidos</a>
+      <a href="{{ url_for('main.transport') }}" class="{{ 'active' if request.endpoint == 'main.transport' else '' }}"><span>⇢</span> Tráfico</a>
+      {% if current_user.role == 'admin' %}<a href="{{ url_for('main.users') }}" class="{{ 'active' if request.endpoint == 'main.users' else '' }}"><span>♙</span> Usuarios</a>{% endif %}
+    </nav>
+    <div class="sidebar-bottom"><span class="status-dot"></span> Entorno local<br><small>ERP en desarrollo</small></div>
+  </aside>
+  <main class="main-area">
+    <header class="topbar"><div class="crumb">AndesLog <span>/</span> {% block breadcrumb %}Operaciones{% endblock %}</div><div class="user-menu"><div class="avatar">{{ current_user.username[:1]|upper }}</div><div><b>{{ current_user.username }}</b><small>{{ 'Administrador' if current_user.role == 'admin' else 'Operador' }}</small></div><form method="post" action="{{ url_for('main.logout') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="link-button" title="Cerrar sesión">↗</button></form></div></header>
+    <section class="page-content">
+      {% with messages = get_flashed_messages(with_categories=true) %}{% if messages %}<div class="flashes">{% for category, message in messages %}<div class="flash {{ category }}">{{ message }}</div>{% endfor %}</div>{% endif %}{% endwith %}
+      {% block content %}{% endblock %}
+    </section>
+    <footer>AndesLog ERP <span>·</span> Operaciones logísticas B2B</footer>
+  </main>
+</div>
+{% else %}{% with messages = get_flashed_messages(with_categories=true) %}{% if messages %}<div class="auth-flashes">{% for category, message in messages %}<div class="flash {{ category }}">{{ message }}</div>{% endfor %}</div>{% endif %}{% endwith %}{% block auth_content %}{% endblock %}{% endif %}
+</body>
+</html>
