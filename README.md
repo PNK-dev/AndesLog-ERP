@@ -11,9 +11,30 @@ Monolito modular local para una empresa logística B2B. El primer MVP cubre acce
 - Pedidos con estado y una línea de producto en este MVP.
 - Tráfico básico con conductores, vehículos, rutas, pedidos asociados y estados de viaje. Al completar un viaje se marca el pedido asociado como entregado.
 - Resumen de operación y API JSON mínima (`/api/health`, `/api/v1/summary`).
+- Importación masiva de datos simulados desde CSV, con validación y transacción completa.
 - PostgreSQL para el entorno local mediante Docker Compose. No se necesita instalar PostgreSQL en Windows.
 
 Es un prototipo académico/MVP, todavía no es un ERP listo para producción. No incluye facturación, costos, guías de remisión, liquidación de transportistas, permisos granulares, auditoría completa ni conciliación automática de pedidos contra stock.
+
+## Importar datos desde CSV
+
+Inicia sesión con una cuenta administradora y abre **Importar CSV** en el menú. Puedes descargar desde esa pantalla `andeslog_demo.csv`, que contiene datos completamente ficticios para poblar los ocho módulos del MVP, o preparar un archivo propio con la misma estructura.
+
+El archivo debe guardarse como CSV UTF-8 y usar estos encabezados exactos:
+
+```text
+tipo,codigo,nombre,ciudad,email,contacto,unidad,almacen,producto,cantidad,capacidad_kg,telefono,cliente,estado,origen,destino,vehiculo,conductor,pedido
+```
+
+Cada fila lleva un valor `tipo`: `almacen`, `producto`, `cliente`, `inventario`, `vehiculo`, `conductor`, `pedido` o `viaje`. Los demás campos se completan según el tipo; la pantalla del ERP muestra qué columnas usa cada uno. Las filas pueden aparecer en cualquier orden. Los códigos relacionan los datos, por ejemplo, `almacen` y `producto` en una fila de inventario deben coincidir con un almacén y un SKU del mismo CSV o ya existentes en el ERP.
+
+La carga está limitada a 2 MB y 500 filas. Se validan encabezados, datos obligatorios, cantidades, estados, referencias y códigos repetidos. Si hay errores o algún identificador ya existe, se rechaza el archivo completo y no se guarda ninguna fila. Los saldos iniciales también generan movimientos de entrada asociados al administrador que realizó la importación. El CSV de ejemplo está pensado para una base vacía; no lo importes dos veces.
+
+En local, reconstruye y reinicia la aplicación para incluir el importador:
+
+```powershell
+docker compose up --build -d
+```
 
 ## Requisitos locales
 
@@ -34,6 +55,8 @@ En macOS o Linux, reemplaza el último comando por `cp .env.example .env`. Edita
 ## Arranque rápido en Windows PowerShell
 
 Después de crear `.env` desde `.env.example`, edítalo y reemplaza `SECRET_KEY`, `POSTGRES_PASSWORD` y `BOOTSTRAP_ADMIN_PASSWORD` por valores aleatorios. La contraseña del administrador inicial debe tener al menos 12 caracteres. No subas `.env` a Git ni reutilices estas credenciales en la nube.
+
+La aplicación incluye protección CSRF, hash de contraseñas, cookies de sesión `HttpOnly` y `SameSite=Lax`, y cabeceras CSP, `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy` y `Permissions-Policy`. En producción, usa `APP_ENV=production` detrás de HTTPS para activar la marca `Secure` en la cookie de sesión. Las cabeceras no sustituyen TLS: el listener del ALB requiere un dominio propio y un certificado ACM para habilitar HTTPS.
 
 Desde `ERP-APP`:
 

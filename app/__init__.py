@@ -21,6 +21,7 @@ def create_app(test_config: dict | None = None) -> Flask:
         SECRET_KEY=os.getenv("SECRET_KEY"),
         SQLALCHEMY_DATABASE_URI=os.getenv("DATABASE_URL", "sqlite:///andeslog.db"),
         SQLALCHEMY_TRACK_MODIFICATIONS=False,
+        MAX_CONTENT_LENGTH=2 * 1024 * 1024,
         SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SAMESITE="Lax",
         SESSION_COOKIE_SECURE=os.getenv("APP_ENV", "development") == "production",
@@ -46,6 +47,20 @@ def create_app(test_config: dict | None = None) -> Flask:
 
     from .routes import bp
     app.register_blueprint(bp)
+
+    @app.after_request
+    def add_security_headers(response):
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+        response.headers.setdefault("Permissions-Policy", "camera=(), geolocation=(), microphone=()")
+        response.headers.setdefault(
+            "Content-Security-Policy",
+            "default-src 'self'; base-uri 'self'; form-action 'self'; "
+            "frame-ancestors 'none'; object-src 'none'; img-src 'self' data:; "
+            "style-src 'self'; script-src 'self'",
+        )
+        return response
 
     @app.cli.command("seed-admin")
     @click.option("--username", envvar="BOOTSTRAP_ADMIN_USERNAME", default="admin")

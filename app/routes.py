@@ -9,6 +9,7 @@ from flask_login import current_user, login_required, login_user, logout_user
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 
+from .csv_import import CsvImportError, import_logistics_csv
 from .models import (
     Customer, Driver, InventoryBalance, OrderLine, Product, SalesOrder,
     StockMovement, Trip, User, Vehicle, Warehouse, db,
@@ -311,6 +312,53 @@ def users():
             flash("Usuario creado.", "success")
             return redirect(url_for("main.users"))
     return render_template("users.html", items=User.query.order_by(User.username).all())
+
+
+@bp.route("/import-data", methods=["GET", "POST"])
+@login_required
+def import_data():
+    if current_user.role != "admin":
+        abort(403)
+
+    errors = []
+    if request.method == "POST":
+        uploaded = request.files.get("csv_file")
+        if not uploaded or not uploaded.filename:
+            errors = ["Selecciona un archivo CSV."]
+        elif not uploaded.filename.lower().endswith(".csv"):
+            errors = ["El archivo debe tener extensión .csv."]
+        else:
+            content = uploaded.read(2 * 1024 * 1024 + 1)
+            if len(content) > 2 * 1024 * 1024:
+                errors = ["El archivo supera el máximo de 2 MB."]
+            else:
+                try:
+                    csv_text = content.decode("utf-8-sig")
+                    counts = import_logistics_csv(csv_text, current_user.id)
+                    labels = {
+                        "almacen": "almacenes",
+                        "producto": "productos",
+                        "cliente": "clientes",
+                        "inventario": "saldos de inventario",
+                        "vehiculo": "vehículos",
+                        "conductor": "conductores",
+                        "pedido": "pedidos",
+                        "viaje": "viajes",
+                    }
+                    summary = ", ".join(
+                        f"{count} {labels.get(kind, kind)}"
+                        for kind, count in counts.items()
+                        if count
+                    ) or "sin registros"
+                    flash(f"Importación completada: {summary}.", "success")
+                    return redirect(url_for("main.import_data"))
+                except UnicodeDecodeError:
+                    errors = ["No se pudo leer el archivo. Guárdalo como CSV UTF-8 y vuelve a intentarlo."]
+                except CsvImportError as exc:
+                    db.session.rollback()
+                    errors = exc.errors
+
+    return render_template("import_data.html", errors=errors)
 
 
 @bp.get("/api/health")

@@ -19,7 +19,7 @@
       <a href="{{ url_for('main.customers') }}" class="{{ 'active' if request.endpoint == 'main.customers' else '' }}"><span>♧</span> Clientes B2B</a>
       <a href="{{ url_for('main.orders') }}" class="{{ 'active' if request.endpoint == 'main.orders' else '' }}"><span>▣</span> Pedidos</a>
       <a href="{{ url_for('main.transport') }}" class="{{ 'active' if request.endpoint == 'main.transport' else '' }}"><span>⇢</span> Tráfico</a>
-      {% if current_user.role == 'admin' %}<a href="{{ url_for('main.users') }}" class="{{ 'active' if request.endpoint == 'main.users' else '' }}"><span>♙</span> Usuarios</a>{% endif %}
+      {% if current_user.role == 'admin' %}<a href="{{ url_for('main.import_data') }}" class="{{ 'active' if request.endpoint == 'main.import_data' else '' }}"><span>⇧</span> Importar CSV</a><a href="{{ url_for('main.users') }}" class="{{ 'active' if request.endpoint == 'main.users' else '' }}"><span>♙</span> Usuarios</a>{% endif %}
     </nav>
     <div class="sidebar-bottom"><span class="status-dot"></span> Entorno local<br><small>ERP en desarrollo</small></div>
   </aside>

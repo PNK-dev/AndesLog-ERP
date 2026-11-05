@@ -1,0 +1,48 @@
+{% extends 'base.html' %}
+{% block title %}Importar datos{% endblock %}
+{% block breadcrumb %}Importar CSV{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div>
+    <div class="eyebrow">CARGA INICIAL Y DATOS MASIVOS</div>
+    <h1>Importar datos CSV</h1>
+    <p>Carga almacenes, inventario, clientes, pedidos y tráfico desde un solo archivo.</p>
+  </div>
+</div>
+
+{% if errors %}
+<section class="panel import-errors section-gap">
+  <div class="panel-heading"><div><h2>No se importó ningún dato</h2><p>Corrige las filas indicadas y vuelve a subir el archivo.</p></div></div>
+  <ul>{% for error in errors %}<li>{{ error }}</li>{% endfor %}</ul>
+</section>
+{% endif %}
+
+<div class="content-grid">
+  <section class="panel">
+    <div class="panel-heading"><div><h2>Seleccionar archivo</h2><p>La carga es atómica: si encuentra un error, no guarda ninguna fila.</p></div></div>
+    <p class="import-intro">Descarga el archivo de ejemplo, edítalo o súbelo directamente para llenar el ERP con datos ficticios de AndesLog.</p>
+    <a class="button ghost full" href="{{ url_for('static', filename='andeslog_demo.csv') }}" download>Descargar CSV con datos simulados <span>↓</span></a>
+    <form method="post" enctype="multipart/form-data" class="form-stack import-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <label>Archivo CSV<input type="file" name="csv_file" accept=".csv,text/csv" required></label>
+      <small class="muted">CSV UTF-8 · máximo 2 MB y 500 filas · solo administradores</small>
+      <button class="button primary">Validar e importar <span>→</span></button>
+    </form>
+  </section>
+
+  <section class="panel">
+    <div class="panel-heading"><div><h2>Tipos de fila</h2><p>El archivo puede mezclar todos estos registros.</p></div></div>
+    <div class="table-wrap"><table><thead><tr><th>tipo</th><th>Datos que usa</th></tr></thead><tbody>
+      <tr><td><span class="code-pill">almacen</span></td><td>codigo, nombre, ciudad</td></tr>
+      <tr><td><span class="code-pill">producto</span></td><td>codigo (SKU), nombre, unidad</td></tr>
+      <tr><td><span class="code-pill">cliente</span></td><td>codigo (RUC/ID), nombre, email, contacto</td></tr>
+      <tr><td><span class="code-pill">inventario</span></td><td>almacen, producto (SKU), cantidad inicial</td></tr>
+      <tr><td><span class="code-pill">vehiculo</span></td><td>codigo (placa), nombre (tipo), capacidad_kg</td></tr>
+      <tr><td><span class="code-pill">conductor</span></td><td>codigo (licencia), nombre, telefono</td></tr>
+      <tr><td><span class="code-pill">pedido</span></td><td>codigo, cliente, producto, cantidad, estado</td></tr>
+      <tr><td><span class="code-pill">viaje</span></td><td>codigo, origen, destino, vehiculo, conductor, pedido, estado</td></tr>
+    </tbody></table></div>
+    <div class="notice section-gap">Los códigos relacionan las filas. Por ejemplo, <b>almacen</b> debe coincidir con el código declarado en una fila de tipo <b>almacen</b>. Los identificadores que ya existen se rechazan para evitar duplicados.</div>
+  </section>
+</div>
+{% endblock %}
