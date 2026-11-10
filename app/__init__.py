@@ -8,6 +8,7 @@ from flask_login import LoginManager
 from flask_migrate import Migrate
 from flask_wtf.csrf import CSRFProtect
 from sqlalchemy import text
+from sqlalchemy.engine import make_url
 from sqlalchemy.exc import SQLAlchemyError
 from werkzeug.middleware.proxy_fix import ProxyFix
 
@@ -40,6 +41,16 @@ def create_app(test_config: dict | None = None) -> Flask:
     )
     if test_config:
         app.config.update(test_config)
+    # Fail a stalled PostgreSQL connection attempt promptly so readiness and
+    # callers can recover instead of exhausting the web-worker pool. libpq
+    # applies this per host; explicit URI or engine settings take precedence.
+    database_url = make_url(app.config["SQLALCHEMY_DATABASE_URI"])
+    if database_url.get_backend_name() == "postgresql" and "connect_timeout" not in database_url.query:
+        engine_options = dict(app.config.get("SQLALCHEMY_ENGINE_OPTIONS") or {})
+        connect_args = dict(engine_options.get("connect_args") or {})
+        connect_args.setdefault("connect_timeout", 5)
+        engine_options["connect_args"] = connect_args
+        app.config["SQLALCHEMY_ENGINE_OPTIONS"] = engine_options
     if not app.config.get("SECRET_KEY"):
         raise RuntimeError("Define SECRET_KEY en el entorno antes de iniciar la aplicación.")
 

@@ -69,6 +69,8 @@ docker compose ps
 
 Abre <http://localhost:8000>. La comprobación de vida del proceso responde en `http://localhost:8000/api/health/live`. La disponibilidad se consulta en `http://localhost:8000/api/health/ready` (también `/api/health`): con PostgreSQL devuelve 503 si el servidor está en recuperación o si la transacción es de solo lectura. La comprobación no escribe ni garantiza permisos suficientes, integridad de datos o ausencia de dos primarios. SQLite conserva la comprobación básica de conexión.
 
+Las conexiones nuevas a PostgreSQL usan un tiempo máximo de conexión de cinco segundos por host, salvo que `DATABASE_URL` especifique `connect_timeout`. Esto limita la espera al establecer conexiones; no limita consultas en curso ni garantiza por sí solo el tiempo total de recuperación. Consulta la [documentación de libpq](https://www.postgresql.org/docs/current/libpq-connect.html).
+
 El formulario de inventario asigna un identificador a cada operación. Si se reenvía el mismo formulario con los mismos datos, el ERP reconoce el movimiento y no lo registra dos veces; si se reutiliza el identificador con datos distintos devuelve conflicto. La protección depende de que el registro exista en la base recuperada y de reenviar el mismo formulario: abrir uno nuevo genera otro identificador. Si una réplica perdió la transacción, un reintento puede volver a registrarla; su evento intercloud conserva el identificador derivado, pero si Azure ya recibió otro contenido con ese ID se necesita reconciliación manual. Otras operaciones todavía no tienen esta protección. La migración agrega un campo opcional para respetar movimientos históricos y no permite revertirla si ya existen identificadores que se perderían.
 
 Para ver registros:
