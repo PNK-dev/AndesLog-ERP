@@ -10,7 +10,7 @@ Monolito modular local para una empresa logística B2B. El primer MVP cubre acce
 - Movimientos de entrada/salida con trazabilidad y bloqueo de salidas que dejarían stock negativo.
 - Pedidos con estado y una línea de producto en este MVP.
 - Tráfico básico con conductores, vehículos, rutas, pedidos asociados y estados de viaje. Al completar un viaje se marca el pedido asociado como entregado.
-- Resumen de operación y API JSON mínima (`/api/health`, `/api/v1/summary`).
+- Resumen de operación y API JSON mínima (`/api/health/live`, `/api/health/ready`, `/api/v1/summary`).
 - Importación masiva de datos simulados desde CSV, con validación y transacción completa.
 - PostgreSQL para el entorno local mediante Docker Compose. No se necesita instalar PostgreSQL en Windows.
 
@@ -58,6 +58,8 @@ Después de crear `.env` desde `.env.example`, edítalo y reemplaza `SECRET_KEY`
 
 La aplicación incluye protección CSRF, hash de contraseñas, cookies de sesión `HttpOnly` y `SameSite=Lax`, y cabeceras CSP, `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy` y `Permissions-Policy`. En producción, usa `APP_ENV=production` detrás de HTTPS para activar la marca `Secure` en la cookie de sesión. Las cabeceras no sustituyen TLS: el listener del ALB requiere un dominio propio y un certificado ACM para habilitar HTTPS.
 
+Existe una opción experimental `TRUST_PROXY_PROTO=true` para reconocer `X-Forwarded-Proto` de **un único proxy confiable** que termina TLS. Solo se debe activar si la aplicación no es accesible directamente desde clientes y las reglas de red garantizan que las solicitudes lleguen exclusivamente por ese proxy; de lo contrario un cliente puede falsificar la cabecera. No confía en las cabeceras de IP, host, puerto ni prefijo. Se probó con sesiones y CSRF en local, no en AWS; el script del laboratorio sigue usando HTTP y no configura esta opción de producción. [Guía de Flask para proxies](https://flask.palletsprojects.com/en/stable/deploying/proxy_fix/).
+
 Desde `ERP-APP`:
 
 ```powershell
@@ -65,7 +67,9 @@ docker compose up --build -d
 docker compose ps
 ```
 
-Abre <http://localhost:8000>. La API responde en `http://localhost:8000/api/health`.
+Abre <http://localhost:8000>. La comprobación de vida del proceso responde en `http://localhost:8000/api/health/live`. La disponibilidad se consulta en `http://localhost:8000/api/health/ready` (también `/api/health`): con PostgreSQL devuelve 503 si el servidor está en recuperación o si la transacción es de solo lectura. La comprobación no escribe ni garantiza permisos suficientes, integridad de datos o ausencia de dos primarios. SQLite conserva la comprobación básica de conexión.
+
+El formulario de inventario asigna un identificador a cada operación. Si se reenvía el mismo formulario con los mismos datos, el ERP reconoce el movimiento y no lo registra dos veces; si se reutiliza el identificador con datos distintos devuelve conflicto. La protección depende de que el registro exista en la base recuperada y de reenviar el mismo formulario: abrir uno nuevo genera otro identificador. Si una réplica perdió la transacción, un reintento puede volver a registrarla; su evento intercloud conserva el identificador derivado, pero si Azure ya recibió otro contenido con ese ID se necesita reconciliación manual. Otras operaciones todavía no tienen esta protección. La migración agrega un campo opcional para respetar movimientos históricos y no permite revertirla si ya existen identificadores que se perderían.
 
 Para ver registros:
 
@@ -102,7 +106,7 @@ docker compose build web
 docker compose run --rm --no-deps web python -m pytest -q
 ```
 
-Las pruebas cubren acceso autenticado, autorización por rol, recepción y salida de stock, rechazo de inventario negativo, creación de pedidos y cierre de entrega desde tráfico.
+Las pruebas cubren acceso autenticado, autorización por rol, recepción y salida de stock, rechazo de inventario negativo, creación de pedidos, tráfico y entrega de eventos. Las pruebas opcionales de concurrencia y restauración usan PostgreSQL temporal en `127.0.0.1` y se omiten si faltan los binarios correspondientes; no necesitan recursos cloud. La restauración local comprueba datos sintéticos, migraciones y login, pero no acredita la recuperación de un backup RDS real.
 
 ## Estructura
 
@@ -117,30 +121,22 @@ compose.yaml          web + PostgreSQL local
 
 ## Datos y persistencia
 
-Compose guarda PostgreSQL en el volumen nombrado `postgres_data`. Reconstruir la imagen o recrear el contenedor web no borra ese volumen. Las migraciones versionadas actualizan el esquema de la base. La base local sirve para desarrollo; al desplegar en AWS se configurará el `DATABASE_URL` privado de PostgreSQL en la EC2 existente y se ejecutará el mismo comando de migración durante una etapa controlada.
+Compose guarda PostgreSQL en el volumen nombrado `postgres_data`. Reconstruir la imagen o recrear el contenedor web no borra ese volumen. Las migraciones versionadas actualizan el esquema. La base local sirve para desarrollo; el Terraform actual define RDS PostgreSQL privado y ejecuta la migración en una fase controlada. Consulta el README del repositorio Terraform para sus requisitos y limitaciones vigentes.
 
 ## Migración a la nube con Docker
 
 1. Crear y probar una imagen inmutable del ERP; publicarla en un registro permitido por la cuenta académica.
-2. Terraform mantiene redes, EC2, balanceador y PostgreSQL; no contiene código de negocio ni contraseñas de usuario.
+2. Terraform mantiene redes, EC2, balanceador y RDS; el estado puede contener valores sensibles y debe protegerse.
 3. Instalar Docker Engine/Compose en las EC2 web mediante el bootstrap de la instancia y desplegar la misma imagen/configuración que se probó localmente.
-4. Configurar el ERP con variables de entorno: `DATABASE_URL`, `SECRET_KEY`, `BOOTSTRAP_ADMIN_USERNAME` y `BOOTSTRAP_ADMIN_PASSWORD`. No almacenar contraseñas en Git ni en archivos `.tfvars`; el manejo final de secretos debe elegirse según permisos de AWS Academy.
+4. Configurar el ERP con `DATABASE_URL`, `SECRET_KEY`, `BOOTSTRAP_ADMIN_USERNAME` y `BOOTSTRAP_ADMIN_PASSWORD`. El flujo Terraform prepara secretos de ejecución para AWS Secrets Manager y un archivo local ignorado por Git; protege ambos y revisa los permisos de AWS Academy.
 5. Ejecutar migraciones una vez contra PostgreSQL, validar `/api/health`, login y flujos básicos detrás del ALB.
-6. Mantener PostgreSQL en la instancia y volumen EBS ya existentes; no publicar el puerto 5432 a Internet. Hacer backup antes de cambios del esquema.
+6. Mantener PostgreSQL en RDS privado sin publicar el puerto 5432 a Internet. Hacer backup y probar restauración antes de cambios del esquema.
 
-El compose de este directorio es para desarrollo local. El despliegue remoto se añadirá en la fase de migración cuando confirmemos qué registro de imágenes y mecanismo de secretos permite la cuenta académica. La API actual de infraestructura que ya vive en `Terraform/app` no debe sincronizarse automáticamente con este ERP; esta carpeta será el nuevo origen de la aplicación.
+El compose de este directorio es para desarrollo local. El despliegue y la publicación de la imagen se gestionan desde el repositorio Terraform hermano; revisa allí el registro, las credenciales temporales y las opciones actuales antes de desplegar.
 
 ## Publicar una imagen para Terraform
 
-La infraestructura consume una imagen del ERP publicada en un registro de contenedores; no necesita la carpeta del código ni una ruta absoluta de Windows. Construye y publica una versión identificada, no `latest`:
-
-```powershell
-$image = "ghcr.io/<usuario-o-equipo>/andeslog-erp:1.0.0"
-docker build -t $image .
-docker push $image
-```
-
-En GitHub Container Registry, cambia la visibilidad del paquete a **Public** si se usará con el Terraform actual: las instancias AWS hacen `docker pull` anónimo. GHCR crea los paquetes nuevos como privados inicialmente. Si eliges un registro privado, habrá que modificar el bootstrap de AWS para autenticarse sin incluir credenciales en Terraform. Configura la misma referencia versionada en `erp_image` dentro del `terraform.tfvars` local de AWS. Para despliegues reproducibles, prefiere una referencia por digest cuando ya esté publicada.
+El flujo Terraform actual construye este proyecto hermano y publica una imagen con etiqueta inmutable `img-...` en ECR privado. Las instancias necesitan permisos para descargarla. Ejecuta la publicación mediante el flujo documentado en el README del repositorio Terraform; publicar una imagen GHCR por sí sola no actualiza el despliegue configurado actualmente. En un clon nuevo, verifica la ubicación de ambos repositorios y las credenciales de AWS antes de desplegar.
 
 Para versionar el repositorio, inicialízalo y enlázalo al remoto que elijas:
 
@@ -159,10 +155,24 @@ git push -u origin main
 | Variable | Propósito |
 |---|---|
 | `APP_ENV` | `development` local; usar `production` al desplegar para activar cookies Secure |
+| `TRUST_PROXY_PROTO` | Experimental: `true` solo detrás de un proxy confiable único con acceso al backend restringido; por defecto `false` |
 | `SECRET_KEY` | Firma de sesiones Flask; secreta y única por ambiente |
 | `DATABASE_URL` | Conexión SQLAlchemy. Compose la arma con el servicio PostgreSQL local |
 | `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD` | Base local del servicio `db` |
 | `BOOTSTRAP_ADMIN_USERNAME`, `BOOTSTRAP_ADMIN_PASSWORD` | Cuenta inicial local, solo se crea si no existe |
+| `ERP_AZURE_INGEST_URL` | Endpoint HTTPS de integración de eventos con Azure |
+| `ERP_AZURE_INGEST_HMAC_SECRET` | Secreto de firma para la integración; no incluir en Git ni registros |
+| `ERP_AZURE_INGEST_FALLBACK_URL` | Endpoint regional alternativo experimental; vacío lo desactiva |
+| `ERP_AZURE_INGEST_FALLBACK_HMAC_SECRET` | Secreto HMAC independiente para el endpoint alternativo |
+| `OUTBOX_POLL_SECONDS` | Intervalo del worker cuando no hay eventos disponibles |
+
+## Integración por eventos
+
+El ERP registra eventos en PostgreSQL junto con los cambios de negocio. El worker los envía con HMAC y los reintenta ante fallas temporales; Azure acepta duplicados por UUID. El worker solo marca `delivered` si recibe un JSON con el mismo ID y estado `stored` o `duplicate`, y no sigue redirecciones HTTP. Si vence el lease y otro worker reclama el evento, el intento anterior ya no puede cambiar su estado usando esa reclamación.
+
+La entrega puede repetirse, no garantiza orden global y no demuestra recuperación ante pérdida regional. Los errores permanentes pasan a `dead` y requieren revisión. Para nuevos fallos temporales, el worker usa espera exponencial con variación aleatoria y un máximo habitual de 60 segundos; si el servidor envía un `Retry-After` válido más largo, lo respeta. Esto no garantiza que un evento se entregue en 60 segundos: influyen el timeout, la cola, las caídas y la capacidad del servicio. Los eventos que ya tenían una espera larga con el código anterior conservan su fecha; deben revisarse durante la actualización. Los reintentos más frecuentes pueden aumentar solicitudes y carga. El bloqueo de intentos obsoletos depende de la consistencia de una misma base y no sustituye fencing entre primarios separados. Estos cambios se probaron localmente y requieren una nueva imagen y una prueba de integración en nube antes de considerarlos desplegados. Referencias: [Transactional outbox de AWS](https://docs.aws.amazon.com/prescriptive-guidance/latest/cloud-design-patterns/transactional-outbox.html) y [manejo de fallos transitorios de Azure](https://learn.microsoft.com/en-us/azure/architecture/best-practices/transient-faults).
+
+La ruta regional alternativa es experimental: ante errores de red, respuesta inválida o HTTP 408/425/429/5xx del destino primario, intenta el secundario con el mismo evento y una clave independiente. La migración `2f5b9c6d7a10` registra si el comprobante llegó de `primary` o `secondary`; los registros antiguos `NULL` corresponden al flujo previo sin destino secundario. No se siguen redirecciones y los endpoints externos configurados deben usar HTTPS. Si ambos destinos fallan, el evento permanece pendiente; un error permanente del primario no cambia automáticamente de región. El archivo secundario de ingesta y la réplica del archivo primario son contenedores distintos: una respuesta perdida puede dejar el mismo evento en ambos y todavía no existe reconciliación ni retorno automático al primario. La opción no debe activarse en producción hasta publicar y validar la Function secundaria y su recuperación. La reversión de la migración se bloquea si hay eventos registrados en el archivo secundario.
 
 ## Referencias oficiales
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from urllib.parse import urlsplit
+from uuid import UUID, uuid4, uuid5
 
 from flask import Blueprint, abort, flash, jsonify, redirect, render_template, request, url_for
 from flask_login import current_user, login_required, login_user, logout_user
@@ -10,6 +11,7 @@ from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 
 from .csv_import import CsvImportError, import_logistics_csv
+from .outbox import enqueue_event
 from .models import (
     Customer, Driver, InventoryBalance, OrderLine, Product, SalesOrder,
     StockMovement, Trip, User, Vehicle, Warehouse, db,
@@ -18,6 +20,7 @@ from .models import (
 bp = Blueprint("main", __name__)
 ORDER_STATUSES = ["pendiente", "preparando", "despachado", "entregado", "cancelado"]
 TRIP_STATUSES = ["programado", "en_ruta", "completado", "cancelado"]
+INVENTORY_EVENT_NAMESPACE = UUID("2d59705a-778b-4522-993b-896e259ac806")
 
 
 def positive_decimal(raw: str | None) -> Decimal:
@@ -144,14 +147,45 @@ def customers():
 @bp.route("/inventory", methods=["GET", "POST"])
 @login_required
 def inventory():
+    operation_id = str(uuid4())
     if request.method == "POST":
+        supplied_id = request.form.get("operation_id", "")
         try:
-            warehouse = db.session.get(Warehouse, int(request.form.get("warehouse_id", "0")))
-            product = db.session.get(Product, int(request.form.get("product_id", "0")))
+            parsed_id = UUID(supplied_id)
+            if str(parsed_id) != supplied_id or parsed_id.version != 4:
+                raise ValueError()
+        except (ValueError, TypeError, AttributeError):
+            abort(400, description="Identificador de operación inválido. Vuelve a abrir el formulario.")
+        operation_id = supplied_id
+        warehouse_id = product_id = None
+        movement_type = quantity = reason = None
+
+        def replay_response(existing):
+            if (existing.user_id != current_user.id or existing.warehouse_id != warehouse_id
+                    or existing.product_id != product_id or existing.movement_type != movement_type
+                    or existing.quantity != quantity or existing.reason != reason):
+                abort(409, description="El identificador ya corresponde a otro movimiento.")
+            flash("Movimiento de inventario registrado.", "success")
+            return redirect(url_for("main.inventory"))
+
+        try:
+            warehouse_id = int(request.form.get("warehouse_id", "0"))
+            product_id = int(request.form.get("product_id", "0"))
             movement_type = request.form.get("movement_type", "")
             quantity = positive_decimal(request.form.get("quantity"))
+            reason = request.form.get("reason", "").strip()
+            existing = StockMovement.query.filter_by(operation_id=operation_id).first()
+            if existing:
+                return replay_response(existing)
+            # Lock an existing parent before reading or creating a balance. This
+            # also serializes concurrent first movements of the same warehouse.
+            warehouse = Warehouse.query.filter_by(id=warehouse_id).with_for_update().first()
+            product = db.session.get(Product, product_id)
             if not warehouse or not product or movement_type not in {"entrada", "salida"}:
                 raise ValueError("Selecciona un almacén, producto y tipo de movimiento válidos.")
+            existing = StockMovement.query.filter_by(operation_id=operation_id).first()
+            if existing:
+                return replay_response(existing)
             balance = InventoryBalance.query.filter_by(warehouse_id=warehouse.id, product_id=product.id).with_for_update().first()
             if not balance:
                 balance = InventoryBalance(warehouse=warehouse, product=product, quantity=Decimal("0"))
@@ -159,12 +193,28 @@ def inventory():
             if movement_type == "salida" and balance.quantity < quantity:
                 raise ValueError(f"Stock insuficiente. Disponible: {balance.quantity} {product.unit}.")
             balance.quantity += quantity if movement_type == "entrada" else -quantity
-            db.session.add(StockMovement(warehouse=warehouse, product=product, user=current_user,
-                                         movement_type=movement_type, quantity=quantity,
-                                         reason=request.form.get("reason", "").strip()))
+            movement = StockMovement(operation_id=operation_id, warehouse=warehouse, product=product, user=current_user,
+                                     movement_type=movement_type, quantity=quantity,
+                                     reason=reason)
+            db.session.add(movement)
+            enqueue_event("erp.inventory.movement_recorded", "inventory_balance",
+                          f"{warehouse.code}:{product.sku}", {
+                              "operation_id": operation_id,
+                              "warehouse_code": warehouse.code,
+                              "product_sku": product.sku,
+                              "movement_type": movement_type,
+                              "quantity": str(quantity),
+                              "balance": str(balance.quantity),
+                          }, event_id=str(uuid5(INVENTORY_EVENT_NAMESPACE, operation_id)))
             db.session.commit()
             flash("Movimiento de inventario registrado.", "success")
             return redirect(url_for("main.inventory"))
+        except IntegrityError:
+            db.session.rollback()
+            existing = StockMovement.query.filter_by(operation_id=operation_id).first()
+            if existing:
+                return replay_response(existing)
+            abort(409, description="El movimiento no pudo registrarse por un conflicto. Inténtalo de nuevo.")
         except (ValueError, TypeError) as exc:
             db.session.rollback()
             flash(str(exc), "error")
@@ -172,7 +222,8 @@ def inventory():
     movements = StockMovement.query.order_by(StockMovement.created_at.desc()).limit(12).all()
     return render_template("inventory.html", balances=balances, movements=movements,
                            warehouses=Warehouse.query.filter_by(active=True).order_by(Warehouse.name).all(),
-                           products=Product.query.filter_by(active=True).order_by(Product.name).all())
+                           products=Product.query.filter_by(active=True).order_by(Product.name).all(),
+                           operation_id=operation_id)
 
 
 @bp.route("/orders", methods=["GET", "POST"])
@@ -191,6 +242,16 @@ def orders():
                 raise ValueError("El número de pedido es obligatorio.")
             order.lines.append(OrderLine(product=product, quantity=quantity))
             db.session.add(order)
+            db.session.flush()
+            enqueue_event("erp.order.created", "sales_order", order.id, {
+                "number": order.number,
+                "status": order.status,
+                "customer": {
+                    "tax_id": customer.tax_id,
+                    "business_name": customer.business_name,
+                },
+                "lines": [{"sku": line.product.sku, "quantity": str(line.quantity)} for line in order.lines],
+            })
             db.session.commit()
             flash(f"Pedido {order.number} registrado.", "success")
             return redirect(url_for("main.orders"))
@@ -214,6 +275,10 @@ def order_status(order_id: int):
     if status not in ORDER_STATUSES:
         abort(400)
     order.status = status
+    enqueue_event("erp.order.status_changed", "sales_order", order.id, {
+        "number": order.number,
+        "status": order.status,
+    })
     db.session.commit()
     flash(f"Pedido {order.number}: {status.replace('_', ' ')}.", "success")
     return redirect(url_for("main.orders"))
@@ -254,6 +319,14 @@ def transport():
                             driver_id=int(driver_id) if driver_id else None,
                             order_id=int(order_id) if order_id else None)
                 db.session.add(trip)
+                db.session.flush()
+                enqueue_event("erp.trip.created", "trip", trip.id, {
+                    "code": trip.code,
+                    "origin": trip.origin,
+                    "destination": trip.destination,
+                    "status": trip.status,
+                    "order_number": trip.order.number if trip.order else None,
+                })
                 db.session.commit()
                 flash("Viaje programado.", "success")
             else:
@@ -286,6 +359,13 @@ def trip_status(trip_id: int):
         trip.departure_at = datetime.now(timezone.utc).replace(tzinfo=None)
     if status == "completado" and trip.order and trip.order.status != "cancelado":
         trip.order.status = "entregado"
+    enqueue_event("erp.trip.status_changed", "trip", trip.id, {
+        "code": trip.code,
+        "origin": trip.origin,
+        "destination": trip.destination,
+        "status": trip.status,
+        "order_number": trip.order.number if trip.order else None,
+    })
     db.session.commit()
     flash(f"Viaje {trip.code}: {status.replace('_', ' ')}.", "success")
     return redirect(url_for("main.transport"))
@@ -359,11 +439,6 @@ def import_data():
                     errors = exc.errors
 
     return render_template("import_data.html", errors=errors)
-
-
-@bp.get("/api/health")
-def api_health():
-    return jsonify(status="ok", service="andeslog-erp")
 
 
 @bp.get("/api/v1/summary")

@@ -23,6 +23,7 @@ services:
       - .:/app
     environment:
       APP_ENV: ${APP_ENV:-development}
+      TRUST_PROXY_PROTO: ${TRUST_PROXY_PROTO:-false}
       SECRET_KEY: ${SECRET_KEY:?Define SECRET_KEY en .env}
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-andeslog}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-andeslog}
       BOOTSTRAP_ADMIN_USERNAME: ${BOOTSTRAP_ADMIN_USERNAME:-admin}

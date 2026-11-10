@@ -1,4 +1,6 @@
 import pytest
+from uuid import uuid4
+from sqlalchemy.exc import OperationalError
 
 from app import create_app
 from app.models import Customer, Driver, InventoryBalance, Product, SalesOrder, Trip, User, Vehicle, Warehouse, db
@@ -51,6 +53,41 @@ def test_security_headers_are_present(client):
     assert "frame-ancestors 'none'" in response.headers["Content-Security-Policy"]
 
 
+def test_health_live_does_not_depend_on_database(client, app, monkeypatch):
+    with app.app_context():
+        def database_unavailable(*args, **kwargs):
+            raise OperationalError("SELECT 1", {}, RuntimeError("database unavailable"))
+
+        monkeypatch.setattr(db.session, "execute", database_unavailable)
+        response = client.get("/api/health/live")
+
+    assert response.status_code == 200
+    assert response.json["status"] == "alive"
+
+
+def test_health_ready_checks_database(client):
+    response = client.get("/api/health/ready")
+    assert response.status_code == 200
+    assert response.json == {
+        "status": "ready",
+        "service": "andeslog-erp",
+        "database": "ok",
+    }
+
+
+def test_health_ready_reports_database_failure(client, app, monkeypatch):
+    with app.app_context():
+        def database_unavailable(*args, **kwargs):
+            raise OperationalError("SELECT 1", {}, RuntimeError("database unavailable"))
+
+        monkeypatch.setattr(db.session, "execute", database_unavailable)
+        response = client.get("/api/health/ready")
+
+    assert response.status_code == 503
+    assert response.json["status"] == "not_ready"
+    assert response.json["database"] == "unavailable"
+
+
 def test_inventory_receipt_and_prevent_negative_stock(app, client):
     login(client)
     with app.app_context():
@@ -61,12 +98,14 @@ def test_inventory_receipt_and_prevent_negative_stock(app, client):
         warehouse_id, product_id = warehouse.id, product.id
 
     receipt = client.post("/inventory", data={
+        "operation_id": str(uuid4()),
         "warehouse_id": warehouse_id, "product_id": product_id,
         "movement_type": "entrada", "quantity": "12", "reason": "Recepción inicial",
     }, follow_redirects=True)
     assert b"Movimiento de inventario registrado" in receipt.data
 
     issue = client.post("/inventory", data={
+        "operation_id": str(uuid4()),
         "warehouse_id": warehouse_id, "product_id": product_id,
         "movement_type": "salida", "quantity": "13", "reason": "Pedido",
     }, follow_redirects=True)
@@ -74,6 +113,31 @@ def test_inventory_receipt_and_prevent_negative_stock(app, client):
     with app.app_context():
         balance = InventoryBalance.query.one()
         assert str(balance.quantity) == "12.00"
+
+
+def test_inventory_retry_is_idempotent_and_rejects_different_payload(app, client):
+    from app.models import OutboxEvent, StockMovement
+
+    login(client)
+    with app.app_context():
+        warehouse = Warehouse(code="IDEMP", name="Almacén", city="Lima")
+        product = Product(sku="IDEMP-01", name="Caja", unit="unidad")
+        db.session.add_all([warehouse, product])
+        db.session.commit()
+        warehouse_id, product_id = warehouse.id, product.id
+    operation = str(uuid4())
+    data = {"operation_id": operation, "warehouse_id": warehouse_id, "product_id": product_id,
+            "movement_type": "entrada", "quantity": "3", "reason": "Recepción"}
+    assert client.post("/inventory", data=data).status_code == 302
+    assert client.post("/inventory", data=data).status_code == 302
+    assert client.post("/inventory", data=dict(data, quantity="4")).status_code == 409
+    assert client.post("/inventory", data=dict(data, operation_id="bad")).status_code == 400
+    with app.app_context():
+        assert InventoryBalance.query.one().quantity == 3
+        assert StockMovement.query.one().operation_id == operation
+        event = OutboxEvent.query.filter_by(event_type="erp.inventory.movement_recorded").one()
+        assert event.payload["operation_id"] == operation
+        assert event.id != operation
 
 
 def test_order_and_transport_lifecycle(app, client):

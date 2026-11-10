@@ -5,6 +5,7 @@ import io
 import unicodedata
 from collections import Counter, defaultdict
 from decimal import Decimal, InvalidOperation
+from uuid import uuid4
 
 from sqlalchemy import tuple_
 from sqlalchemy.exc import IntegrityError
@@ -23,6 +24,7 @@ from .models import (
     db,
     utcnow_naive,
 )
+from .outbox import enqueue_event
 
 CSV_COLUMNS = (
     "tipo",
@@ -386,6 +388,11 @@ def import_logistics_csv(text: str, user_id: int) -> dict[str, int]:
             new_trips.append(trip)
 
         db.session.add_all(new_trips)
+        counts = Counter({kind: len(items) for kind, items in staged.items()})
+        enqueue_event("erp.csv.import_completed", "csv_import", uuid4(), {
+            "counts": dict(counts),
+            "row_count": row_count,
+        })
         db.session.commit()
     except IntegrityError as exc:
         db.session.rollback()
@@ -394,7 +401,4 @@ def import_logistics_csv(text: str, user_id: int) -> dict[str, int]:
         db.session.rollback()
         raise
 
-    counts = Counter()
-    for kind, items in staged.items():
-        counts[kind] = len(items)
     return dict(counts)

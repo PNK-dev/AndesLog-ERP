@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from decimal import Decimal
+from uuid import uuid4
 
 from flask_login import UserMixin
 from flask_sqlalchemy import SQLAlchemy
-from sqlalchemy import CheckConstraint, UniqueConstraint
+from sqlalchemy import CheckConstraint, Index, UniqueConstraint
 from werkzeug.security import check_password_hash, generate_password_hash
 
 
@@ -68,6 +69,7 @@ class InventoryBalance(db.Model):
 
 class StockMovement(db.Model):
     id = db.Column(db.Integer, primary_key=True)
+    operation_id = db.Column(db.String(36), nullable=True)
     warehouse_id = db.Column(db.Integer, db.ForeignKey("warehouse.id"), nullable=False)
     product_id = db.Column(db.Integer, db.ForeignKey("product.id"), nullable=False)
     user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
@@ -78,7 +80,8 @@ class StockMovement(db.Model):
     warehouse = db.relationship(Warehouse)
     product = db.relationship(Product)
     user = db.relationship(User)
-    __table_args__ = (CheckConstraint("quantity > 0"), CheckConstraint("movement_type IN ('entrada', 'salida')"))
+    __table_args__ = (CheckConstraint("quantity > 0"), CheckConstraint("movement_type IN ('entrada', 'salida')"),
+                      Index("ix_stock_movement_operation_id", "operation_id", unique=True))
 
 
 class SalesOrder(db.Model):
@@ -133,4 +136,27 @@ class Trip(db.Model):
     driver = db.relationship(Driver)
     order = db.relationship(SalesOrder)
     __table_args__ = (CheckConstraint("status IN ('programado', 'en_ruta', 'completado', 'cancelado')"),)
+
+
+class OutboxEvent(db.Model):
+    """Durable events awaiting delivery to the Azure integration endpoint."""
+
+    __tablename__ = "outbox_event"
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid4()))
+    event_type = db.Column(db.String(100), nullable=False)
+    aggregate_type = db.Column(db.String(40), nullable=False)
+    aggregate_id = db.Column(db.String(100), nullable=False)
+    payload = db.Column(db.JSON, nullable=False)
+    status = db.Column(db.String(16), nullable=False, default="pending")
+    attempts = db.Column(db.Integer, nullable=False, default=0)
+    created_at = db.Column(db.DateTime, nullable=False, default=utcnow_naive)
+    available_at = db.Column(db.DateTime, nullable=False, default=utcnow_naive)
+    locked_until = db.Column(db.DateTime, nullable=True)
+    delivered_at = db.Column(db.DateTime, nullable=True)
+    delivered_destination = db.Column(db.String(16), nullable=True)
+    last_error = db.Column(db.String(1000), nullable=True)
+    __table_args__ = (
+        CheckConstraint("status IN ('pending', 'processing', 'delivered', 'dead')"),
+        Index("ix_outbox_event_dispatch", "status", "available_at", "created_at"),
+    )
 
